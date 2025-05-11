@@ -17,7 +17,10 @@ from conversation_manager_st import (
     initialize_chat_history,
     add_to_history_st,
     clear_history_st,
-    get_history_for_llm
+    get_history_for_llm,
+    get_chat_history_from_local,
+    save_chat_history_to_local,
+    delete_chat_from_local
 ) 
 
 # ─── Cookie manager for persistent session ID ─────────────────────────────────
@@ -61,8 +64,11 @@ if "chats" not in session_data or not session_data.get("chats"):
 if session_data.get("current_chat") not in session_data["chats"]:
     session_data["current_chat"] = next(iter(session_data["chats"]))
 
-st.session_state.chats = session_data["chats"]
-st.session_state.current_chat = session_data["current_chat"]
+# Initialize session state
+if "chats" not in st.session_state:
+    st.session_state.chats = session_data["chats"]
+if "current_chat" not in st.session_state:
+    st.session_state.current_chat = session_data["current_chat"]
 
 # Shortcut to active chat data
 active = st.session_state.chats.get(st.session_state.current_chat)
@@ -71,18 +77,14 @@ if active is None:
     first = next(iter(st.session_state.chats))
     st.session_state.current_chat = first
     active = st.session_state.chats[first]
-if "chats" not in session_data:
-    session_data = {"current_chat": "Chat 1", "chats": session_data}
-st.session_state.chats = session_data["chats"]
-st.session_state.current_chat = session_data.get("current_chat", next(iter(st.session_state.chats)))
-
-# Shortcut to active chat data
-active = st.session_state.chats[st.session_state.current_chat]
 
 # ─── Initialize chat state from active data ────────────────────────────────────
-st.session_state.current_country  = active.get("country") or list(SUPPORTED_COUNTRIES.keys())[0]
-st.session_state.messages         = active.get("messages", [])
-st.session_state.const_loaded_for = active.get("const_loaded_for")
+if "current_country" not in st.session_state:
+    st.session_state.current_country = active.get("country") or list(SUPPORTED_COUNTRIES.keys())[0]
+if "messages" not in st.session_state:
+    st.session_state.messages = active.get("messages", [])
+if "const_loaded_for" not in st.session_state:
+    st.session_state.const_loaded_for = active.get("const_loaded_for")
 
 # ─── Load or refresh constitution into history ─────────────────────────────────
 initialize_chat_history(st.session_state)
@@ -107,10 +109,80 @@ def save_session():
 
     session_data = {
         "current_chat": st.session_state.current_chat,
-        "chats": st.session_state.chats
+        "chats": st.session_state.chats,
+        "chat_ids": st.session_state.chat_ids if "chat_ids" in st.session_state else {}
     }
     with open(SESSION_FILE, "w", encoding="utf-8") as f:
         json.dump(session_data, f, ensure_ascii=False, indent=2)
+    
+    # Also save to local storage
+    save_chat_history_to_local(st.session_state, st.session_state.current_chat, st.session_state.messages)
+
+# ─── Handlers for chat management ───────────────────────────────────────────────
+def create_new_chat():
+    idx = len(st.session_state.chats) + 1
+    new_name = f"Chat {idx}"
+    st.session_state.chats[new_name] = {
+        "country": st.session_state.current_country, 
+        "messages": [], 
+        "const_loaded_for": None
+    }
+    st.session_state.current_chat = new_name
+    st.session_state.messages = []
+    st.session_state.const_loaded_for = None
+    save_session()
+    st.rerun()
+    
+def switch_to_chat(name):
+    st.session_state.current_chat = name
+    active = st.session_state.chats[name]
+    st.session_state.current_country = active.get("country") or list(SUPPORTED_COUNTRIES.keys())[0]
+    
+    # Load messages from local storage if available
+    local_messages = get_chat_history_from_local(st.session_state, name)
+    if local_messages and len(local_messages) > 0:
+        st.session_state.messages = local_messages
+    else:
+        st.session_state.messages = active.get("messages", [])
+        
+    st.session_state.const_loaded_for = active.get("const_loaded_for")
+    save_session()
+    st.rerun()
+    
+def delete_current_chat():
+    if len(st.session_state.chats) > 1:
+        # Get chat to delete
+        chat_to_delete = st.session_state.current_chat
+        
+        # Delete from local storage
+        delete_chat_from_local(st.session_state, chat_to_delete)
+        
+        # Remove from state
+        del st.session_state.chats[chat_to_delete]
+        
+        # Switch to another chat
+        st.session_state.current_chat = next(iter(st.session_state.chats))
+        active = st.session_state.chats[st.session_state.current_chat]
+        
+        # Load messages from local storage for the new active chat
+        local_messages = get_chat_history_from_local(st.session_state, st.session_state.current_chat)
+        if local_messages and len(local_messages) > 0:
+            st.session_state.messages = local_messages
+        else:
+            st.session_state.messages = active.get("messages", [])
+            
+        st.session_state.current_country = active.get("country") or list(SUPPORTED_COUNTRIES.keys())[0]
+        st.session_state.const_loaded_for = active.get("const_loaded_for")
+        
+        # Save changes
+        save_session()
+        st.rerun()
+    else:
+        # Don't delete the last chat, just clear it
+        clear_history_st(st.session_state)
+        st.session_state.const_loaded_for = None
+        save_session()
+        st.rerun()
 
 # ─── SQLite Stats (in-memory) ─────────────────────────────────────────────────
 DB_PATH = ":memory:"
@@ -210,12 +282,7 @@ with st.sidebar:
 
     # New Chat button
     if st.button("➕ New Chat"):
-        idx = len(st.session_state.chats) + 1
-        new_name = f"Chat {idx}"
-        st.session_state.chats[new_name] = {"country": None, "messages": [], "const_loaded_for": None}
-        st.session_state.current_chat = new_name
-        save_session()
-        st.rerun()
+        create_new_chat()
 
     st.markdown("**Your Chats:**")
     for name in st.session_state.chats:
@@ -223,10 +290,8 @@ with st.sidebar:
             st.markdown(f"- **{name}**")
         else:
             if st.button(name, key=f"select_{name}"):
-                st.session_state.current_chat = name
-                save_session()
-                st.rerun()
-
+                switch_to_chat(name)
+                
     st.markdown("---")
     sel = st.selectbox(
         "Jurisdiction",
@@ -254,11 +319,7 @@ for msg in st.session_state.messages:
 col1, col2, col3 = st.columns([1,1,1])
 with col3:
     if st.button("🗑️ Delete Chat"):
-        # remove from state
-        del st.session_state.chats[st.session_state.current_chat]
-        # delete file entry
-        save_session()
-        st.rerun()
+        delete_current_chat()
 
 # ─── Handle user input ─────────────────────────────────────────────────────────
 if prompt := st.chat_input("Your question…"):
@@ -269,7 +330,14 @@ if prompt := st.chat_input("Your question…"):
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             hist = get_history_for_llm(st.session_state)
-            ai_resp = get_ai_response_st(prompt, st.session_state.current_country, hist)
+            ai_resp = get_ai_response_st(
+                prompt, 
+                st.session_state.current_country, 
+                hist,
+                temperature=0.2,
+                top_p=0.95,
+                candidate_count=1
+            )
             st.markdown(ai_resp)
 
     add_to_history_st(st.session_state, "assistant", ai_resp)

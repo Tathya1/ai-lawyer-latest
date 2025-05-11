@@ -1,59 +1,69 @@
-import os
+"""
+llm_integration_st.py
+Integration with LLM APIs.
+"""
 import google.generativeai as genai
-from data_loader_st import load_constitution_text
 
+# Initialize the Google Generative AI API
+GOOGLE_API_KEY = "AIzaSyAh637ZJqYpG-PSj0aXpzXnWuy09cGs0aw"  # Replace with your actual API key
+genai.configure(api_key=GOOGLE_API_KEY)
 
-genai.configure(api_key="AIzaSyAuzrzun2OIWlgUaR5HJY-3V-am6IsOLvE")
-
-SYSTEM_PROMPT = (
-    "You are an expert legal assistant.  "
-    "You have the following constitutional text for the jurisdiction below.  "
-    "Use ONLY that text plus your general legal knowledge to answer the user’s question clearly, "
-    "citing specific articles where relevant, and offering practical next steps for real-world scenarios."
-)
+# System prompt
+SYSTEM_PROMPT = """You are an AI legal assistant specializing in constitutional law.
+Your purpose is to provide accurate information about constitutional rights and legal procedures.
+Base your responses on the constitution text provided to you.
+If you're unsure about anything, admit that you don't know rather than providing potentially incorrect information.
+Do not make up laws or constitutional provisions that do not exist.
+"""
 
 def get_ai_response_st(
     prompt: str,
     country: str,
-    chat_history_for_llm: list
-) -> str:
+    history: list,
+    temperature=0.2,
+    top_p=0.95,
+    candidate_count=1
+):
     """
-    Pulls SYSTEM_PROMPT + constitution out of chat_history_for_llm,
-    sends them as system_instruction, and then sends only user/model turns.
+    Gets a response from the AI model based on the conversation history.
+    
+    Args:
+        prompt: The user's question or prompt
+        country: The country whose legal system we're discussing
+        history: List of conversation messages in the format [{"role": "...", "content": "..."}]
+        temperature: Controls randomness of output (0.0-1.0), lower is more deterministic
+        top_p: Controls diversity via nucleus sampling (0.0-1.0)
+        candidate_count: Number of response candidates to generate
+        
+    Returns:
+        The AI's response as a string
     """
-    # 1) Append the new user prompt to our in-memory history
-    chat_history_for_llm.append({
-        "role": "user",
-        "content": prompt
-    })
-
-    # 2) Extract and remove system messages
-    system_parts = []
-    filtered = []
-    for turn in chat_history_for_llm:
-        if turn["role"] == "system":
-            system_parts.append(turn["content"])
-        elif turn["role"] == "user":
-            filtered.append({"role": "user", "parts": [turn["content"]]})
-        elif turn["role"] == "assistant":
-            # map your assistant → model
-            filtered.append({"role": "model", "parts": [turn["content"]]})
-
-    system_instruction = "\n\n".join(system_parts)
-
     try:
-        # 3) Instantiate the model with system_instruction
+        # Use the PaLM API or any other LLM API here
         model = genai.GenerativeModel(
             model_name="gemini-2.0-flash",
-            system_instruction=system_instruction
+            generation_config={
+                "temperature": temperature,
+                "top_p": top_p,
+                "candidate_count": candidate_count,
+                "max_output_tokens": 2048,
+            }
         )
+        
+        # Format the conversation for the model
+        formatted_history = []
+        for msg in history:
+            if msg["role"] == "user":
+                formatted_history.append({"role": "user", "parts": [msg["content"]]})
+            elif msg["role"] == "assistant":
+                formatted_history.append({"role": "model", "parts": [msg["content"]]})
+            # System messages are handled differently for Gemini
 
-        # 4) Start chat with only user/model history
-        chat_session = model.start_chat(history=filtered)
-
-        # 5) Send the latest user prompt
-        response = chat_session.send_message(prompt)
-        return response.text.strip()
-
+        # Create a chat session
+        chat = model.start_chat(history=formatted_history)
+        
+        # Get the response
+        response = chat.send_message(prompt)
+        return response.text
     except Exception as e:
-        return f"Error contacting Gemini API: {e}"
+        return f"I encountered an error: {str(e)}. Please try rephrasing your question or try again later."
