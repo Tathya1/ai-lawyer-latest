@@ -1,11 +1,13 @@
 import streamlit as st
+# ─── Page config must be first (no other Streamlit imports/code before this) ─────────────────
+st.set_page_config(page_title="AI Lawyer", page_icon="⚖️", layout="wide")
+
+# ─── Other imports ─────────────────────────────────────────────────────────────
 import os
 import json
 import sqlite3
-from glob import glob
-
-# ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="AI Lawyer", page_icon="⚖️", layout="wide")
+import uuid
+from streamlit_cookies_manager import EncryptedCookieManager
 
 from country_selector_st import SUPPORTED_COUNTRIES
 from data_loader_st import DATA_DIR, load_constitution_text
@@ -16,56 +18,73 @@ from conversation_manager_st import (
     add_to_history_st,
     clear_history_st,
     get_history_for_llm
+) 
+
+# ─── Cookie manager for persistent session ID ─────────────────────────────────
+cookies = EncryptedCookieManager(
+    prefix="ai_lawyer_",
+    password="YOUR_SECURE_32_BYTE_PASSWORD_123456"
 )
+if not cookies.ready():
+    st.stop()
 
-CHAT_DIR = os.path.join(DATA_DIR, "chat")
-DB_PATH  = os.path.join(DATA_DIR, "stats.db")
+sid = cookies.get("sid")
+if sid is None:
+    sid = str(uuid.uuid4())
+    cookies["sid"] = sid
+    cookies.save()
+
+# ─── Storage setup ─────────────────────────────────────────────────────────────
+CHAT_DIR = os.path.join(DATA_DIR, "chat_sessions")
 os.makedirs(CHAT_DIR, exist_ok=True)
+SESSION_FILE = os.path.join(CHAT_DIR, f"{sid}.json")
 
-# ─── Load individual chat files ───────────────────────────────────────────────
-def load_chats_from_disk():
-    chats = {}
-    for path in glob(os.path.join(CHAT_DIR, "*.json")):
-        name = os.path.splitext(os.path.basename(path))[0]
-        with open(path, "r", encoding="utf-8") as f:
-            chats[name] = json.load(f)
-    return chats or {"Chat 1": {"country": None, "messages": [], "const_loaded_for": None}}
+# ─── Load or initialize session data (multiple chats) ─────────────────────────
+if os.path.exists(SESSION_FILE):
+    with open(SESSION_FILE, "r", encoding="utf-8") as f:
+        session_data = json.load(f)
+else:
+    # Default single chat on new session
+    session_data = {
+        "current_chat": "Chat 1",
+        "chats": {
+            "Chat 1": {"country": None, "messages": [], "const_loaded_for": None}
+        }
+    }
+# Ensure structure and non-empty chats
+if "chats" not in session_data or not session_data.get("chats"):
+    session_data = {
+        "current_chat": "Chat 1",
+        "chats": {"Chat 1": {"country": None, "messages": [], "const_loaded_for": None}}
+    }
+# Validate current_chat key
+if session_data.get("current_chat") not in session_data["chats"]:
+    session_data["current_chat"] = next(iter(session_data["chats"]))
 
-def save_chat_to_disk(chat_name, data):
-    path = os.path.join(CHAT_DIR, f"{chat_name}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+st.session_state.chats = session_data["chats"]
+st.session_state.current_chat = session_data["current_chat"]
 
-def delete_chat_from_disk(chat_name):
-    path = os.path.join(CHAT_DIR, f"{chat_name}.json")
-    if os.path.exists(path):
-        os.remove(path)
+# Shortcut to active chat data
+active = st.session_state.chats.get(st.session_state.current_chat)
+if active is None:
+    # Fallback to first chat
+    first = next(iter(st.session_state.chats))
+    st.session_state.current_chat = first
+    active = st.session_state.chats[first]
+if "chats" not in session_data:
+    session_data = {"current_chat": "Chat 1", "chats": session_data}
+st.session_state.chats = session_data["chats"]
+st.session_state.current_chat = session_data.get("current_chat", next(iter(st.session_state.chats)))
 
-# ─── Initialize Chat State ────────────────────────────────────────────────────
-if "chats" not in st.session_state:
-    st.session_state.chats = load_chats_from_disk()
-
-if "current_chat" not in st.session_state:
-    st.session_state.current_chat = next(iter(st.session_state.chats))
-
-if st.session_state.current_chat not in st.session_state.chats:
-    st.session_state.current_chat = next(iter(st.session_state.chats))
-
-# ─── Styling ──────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-  .stButton>button { border-radius: 5px; padding: 10px 15px; }
-  .stTextInput>div>div>input { border-radius: 5px; }
-</style>
-""", unsafe_allow_html=True)
-
-# ─── Current Chat State ───────────────────────────────────────────────────────
+# Shortcut to active chat data
 active = st.session_state.chats[st.session_state.current_chat]
-st.session_state.messages         = active["messages"]
-st.session_state.const_loaded_for = active["const_loaded_for"]
-st.session_state.current_country  = active["country"] or list(SUPPORTED_COUNTRIES.keys())[0]
 
-# ─── Initialize Chat Context ──────────────────────────────────────────────────
+# ─── Initialize chat state from active data ────────────────────────────────────
+st.session_state.current_country  = active.get("country") or list(SUPPORTED_COUNTRIES.keys())[0]
+st.session_state.messages         = active.get("messages", [])
+st.session_state.const_loaded_for = active.get("const_loaded_for")
+
+# ─── Load or refresh constitution into history ─────────────────────────────────
 initialize_chat_history(st.session_state)
 if st.session_state.const_loaded_for != st.session_state.current_country:
     clear_history_st(st.session_state)
@@ -78,11 +97,23 @@ if st.session_state.const_loaded_for != st.session_state.current_country:
     )
     st.session_state.const_loaded_for = st.session_state.current_country
 
-active["country"]          = st.session_state.current_country
-active["const_loaded_for"] = st.session_state.const_loaded_for
-active["messages"]         = st.session_state.messages
+# ─── Save session_data back to file ────────────────────────────────────────────
+def save_session():
+    # update active data
+    active = st.session_state.chats[st.session_state.current_chat]
+    active["country"] = st.session_state.current_country
+    active["messages"] = st.session_state.messages
+    active["const_loaded_for"] = st.session_state.const_loaded_for
 
-# ─── SQLite Setup ─────────────────────────────────────────────────────────────
+    session_data = {
+        "current_chat": st.session_state.current_chat,
+        "chats": st.session_state.chats
+    }
+    with open(SESSION_FILE, "w", encoding="utf-8") as f:
+        json.dump(session_data, f, ensure_ascii=False, indent=2)
+
+# ─── SQLite Stats (in-memory) ─────────────────────────────────────────────────
+DB_PATH = ":memory:"
 def init_db():
     con = sqlite3.connect(DB_PATH, isolation_level=None)
     cur = con.cursor()
@@ -94,6 +125,7 @@ def init_db():
     """)
     return con
 
+# ─── Categories ───────────────────────────────────────────────────────────────
 CATEGORIES = {
     "Constitutional": [
         "constitution","article","amendment","fundamental rights",
@@ -171,55 +203,64 @@ def categorize_question(prompt, response):
                 return cat
     return "Other"
 
-# ─── Sidebar ──────────────────────────────────────────────────────────────────
+# ─── Sidebar: Chats and Jurisdiction ───────────────────────────────────────────
 with st.sidebar:
     st.title("⚖️ AI Lawyer")
     st.markdown("---")
 
+    # New Chat button
     if st.button("➕ New Chat"):
         idx = len(st.session_state.chats) + 1
         new_name = f"Chat {idx}"
-        st.session_state.chats[new_name] = {
-            "country": None, "messages": [], "const_loaded_for": None
-        }
+        st.session_state.chats[new_name] = {"country": None, "messages": [], "const_loaded_for": None}
         st.session_state.current_chat = new_name
-        save_chat_to_disk(new_name, st.session_state.chats[new_name])
-        st.rerun()
+        save_session()
+        st.experimental_rerun()
 
-    st.markdown("#### Your Chats")
+    st.markdown("**Your Chats:**")
     for name in st.session_state.chats:
         if name == st.session_state.current_chat:
-            st.markdown(f"**• {name}**")
+            st.markdown(f"- **{name}**")
         else:
             if st.button(name, key=f"select_{name}"):
                 st.session_state.current_chat = name
-                st.rerun()
+                save_session()
+                st.experimental_rerun()
 
     st.markdown("---")
     sel = st.selectbox(
         "Jurisdiction",
         list(SUPPORTED_COUNTRIES.keys()),
         index=list(SUPPORTED_COUNTRIES.keys()).index(st.session_state.current_country),
-        format_func=lambda k: SUPPORTED_COUNTRIES[k]
+        format_func=lambda k: SUPPORTED_COUNTRIES[k],
+        key="current_country"
     )
     if sel != st.session_state.current_country:
         st.session_state.current_country = sel
         st.session_state.const_loaded_for = None
-        st.rerun()
-
-    st.markdown("---")
-    st.info("This is a just a prototype. Please consult a lawyer for serious matters.")
+        save_session()
+        st.experimental_rerun()
 
 # ─── Main Chat UI ─────────────────────────────────────────────────────────────
 st.title(f"{SUPPORTED_COUNTRIES[st.session_state.current_country]}")
 st.caption(f"Chat: {st.session_state.current_chat}")
 
 for msg in st.session_state.messages:
-    if msg["role"] == "system":
-        continue
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    if msg.get("role") != "system":
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
+# Place Delete Chat button bottom-right
+col1, col2, col3 = st.columns([1,1,1])
+with col3:
+    if st.button("🗑️ Delete Chat"):
+        # remove from state
+        del st.session_state.chats[st.session_state.current_chat]
+        # delete file entry
+        save_session()
+        st.experimental_rerun()
+
+# ─── Handle user input ─────────────────────────────────────────────────────────
 if prompt := st.chat_input("Your question…"):
     add_to_history_st(st.session_state, "user", prompt)
     with st.chat_message("user"):
@@ -232,25 +273,17 @@ if prompt := st.chat_input("Your question…"):
             st.markdown(ai_resp)
 
     add_to_history_st(st.session_state, "assistant", ai_resp)
-    active["messages"] = st.session_state.messages
+    save_session()
 
-    save_chat_to_disk(st.session_state.current_chat, active)
-
-    cat = categorize_question(prompt, ai_resp)
+    # update stats
     con = init_db()
-    con.execute("""
-      INSERT INTO question_stats(category, count)
-      VALUES (?, 1)
-      ON CONFLICT(category) DO UPDATE SET count = count + 1
-    """, (cat,))
+    cat = categorize_question(prompt, ai_resp)
+    con.execute(
+        """
+        INSERT INTO question_stats(category, count)
+        VALUES (?, 1)
+        ON CONFLICT(category) DO UPDATE SET count = count + 1
+        """,
+        (cat,)
+    )
     con.close()
-
-if st.button("🗑️ Delete Chat", key="delete_chat"):
-    delete_chat_from_disk(st.session_state.current_chat)
-    del st.session_state.chats[st.session_state.current_chat]
-    if not st.session_state.chats:
-        st.session_state.chats["Chat 1"] = {
-            "country": None, "messages": [], "const_loaded_for": None
-        }
-    st.session_state.current_chat = next(iter(st.session_state.chats))
-    st.rerun()
