@@ -215,7 +215,7 @@ with st.sidebar:
         st.session_state.chats[new_name] = {"country": None, "messages": [], "const_loaded_for": None}
         st.session_state.current_chat = new_name
         save_session()
-        st.experimental_rerun()
+        st.rerun()
 
     st.markdown("**Your Chats:**")
     for name in st.session_state.chats:
@@ -225,7 +225,7 @@ with st.sidebar:
             if st.button(name, key=f"select_{name}"):
                 st.session_state.current_chat = name
                 save_session()
-                st.experimental_rerun()
+                st.rerun()
 
     st.markdown("---")
     sel = st.selectbox(
@@ -239,7 +239,7 @@ with st.sidebar:
         st.session_state.current_country = sel
         st.session_state.const_loaded_for = None
         save_session()
-        st.experimental_rerun()
+        st.rerun()
 
 # ─── Main Chat UI ─────────────────────────────────────────────────────────────
 st.title(f"{SUPPORTED_COUNTRIES[st.session_state.current_country]}")
@@ -258,7 +258,7 @@ with col3:
         del st.session_state.chats[st.session_state.current_chat]
         # delete file entry
         save_session()
-        st.experimental_rerun()
+        st.rerun()
 
 # ─── Handle user input ─────────────────────────────────────────────────────────
 if prompt := st.chat_input("Your question…"):
