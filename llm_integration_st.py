@@ -14,6 +14,7 @@ Your purpose is to provide accurate information about constitutional rights and 
 Base your responses on the constitution text provided to you.
 If you're unsure about anything, admit that you don't know rather than providing potentially incorrect information.
 Do not make up laws or constitutional provisions that do not exist.
+Also cite specific articles where relevant, and offer practical next steps for real-world scenarios.
 """
 
 def get_ai_response_st(
