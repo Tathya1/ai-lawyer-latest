@@ -13,8 +13,7 @@ SYSTEM_PROMPT = """You are an AI legal assistant specializing in constitutional 
 Your purpose is to provide accurate information about constitutional rights and legal procedures.
 Base your responses on the constitution text provided to you.
 If you're unsure about anything, admit that you don't know rather than providing potentially incorrect information.
-Do not make up laws or constitutional provisions that do not exist.
-Also cite specific articles where relevant, and offer practical next steps for real-world scenarios.
+Do not make up laws or constitutional provisions that do not exist. Also cite specific articles where relevant, and offer practical next steps for real-world scenarios.
 """
 
 def get_ai_response_st(
@@ -51,20 +50,35 @@ def get_ai_response_st(
             }
         )
         
-        # Format the conversation for the model
+        # Extract system messages to use in the initial prompt
+        system_messages = []
+        for msg in history:
+            if msg["role"] == "system":
+                system_messages.append(msg["content"])
+        
+        # Combine system messages into a single context message
+        system_context = "\n\n".join(system_messages) if system_messages else ""
+        
+        # Format the conversation for the model (excluding system messages)
         formatted_history = []
         for msg in history:
             if msg["role"] == "user":
                 formatted_history.append({"role": "user", "parts": [msg["content"]]})
             elif msg["role"] == "assistant":
                 formatted_history.append({"role": "model", "parts": [msg["content"]]})
-            # System messages are handled differently for Gemini
-
+            # System messages are handled separately
+        
         # Create a chat session
         chat = model.start_chat(history=formatted_history)
         
+        # If we have system context, prepend it to the user's prompt
+        if system_context:
+            enhanced_prompt = f"Remember the following context for your response:\n\n{system_context}\n\nNow, answer this question about the {country} legal system:\n{prompt}"
+        else:
+            enhanced_prompt = prompt
+        
         # Get the response
-        response = chat.send_message(prompt)
+        response = chat.send_message(enhanced_prompt)
         return response.text
     except Exception as e:
         return f"I encountered an error: {str(e)}. Please try rephrasing your question or try again later."
